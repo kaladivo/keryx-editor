@@ -1,6 +1,6 @@
 import { formatBytes } from '../lib/bytes';
+import { MAX_ITEM_BYTES } from '../lib/itemSize';
 
-export const MAX_ITEM_BYTES = 1_000_000;
 const WARN_ITEM_BYTES = 900_000;
 
 export function SizeMeter({ bytes }: { bytes: number }) {
@@ -8,7 +8,7 @@ export function SizeMeter({ bytes }: { bytes: number }) {
   return (
     <div className={`size-meter size-${level}`}>
       <div className="size-label">
-        <span>Item size</span>
+        <span>Signed item size</span>
         <span>
           {formatBytes(bytes)} of {formatBytes(MAX_ITEM_BYTES)}
         </span>

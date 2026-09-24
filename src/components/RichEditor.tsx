@@ -1,21 +1,14 @@
-import Image from '@tiptap/extension-image';
 import Placeholder from '@tiptap/extension-placeholder';
 import { Fragment, Slice, type Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { Selection } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { EditorContent, useEditor, type Editor } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
 import { useRef, useState, type ReactNode } from 'react';
 import { imageToDataUrl } from '../lib/images';
+import { RICH_EXTENSIONS, richModeLosses } from '../lib/richSchema';
 import { Icon } from './icons';
 
 const MAX_IMAGE_SIZE = 1200;
-
-const StyledImage = Image.extend({
-  addAttributes() {
-    return { ...this.parent?.(), style: { default: null } };
-  },
-});
 
 const imageFiles = (files?: FileList | null) => [...(files ?? [])].filter((f) => f.type.startsWith('image/'));
 
@@ -37,17 +30,19 @@ interface Props {
   onChange: (html: string) => void;
 }
 
+const lossList = (losses: string[]) => losses.slice(0, 4).join(', ') + (losses.length > 4 ? ', …' : '');
+
 export function RichEditor({ value, onChange }: Props) {
-  const [mode, setMode] = useState<'rich' | 'html'>('rich');
+  const [notice, setNotice] = useState(() => {
+    const losses = richModeLosses(value);
+    return losses.length ? `Opened in HTML mode: the rich editor can't represent ${lossList(losses)}.` : undefined;
+  });
+  const [mode, setMode] = useState<'rich' | 'html'>(notice ? 'html' : 'rich');
   const [error, setError] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
 
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({ link: { openOnClick: false, defaultProtocol: 'https' } }),
-      StyledImage.configure({ allowBase64: true }),
-      Placeholder.configure({ placeholder: 'Write your post…' }),
-    ],
+    extensions: [...RICH_EXTENSIONS, Placeholder.configure({ placeholder: 'Write your post…' })],
     content: value,
     shouldRerenderOnTransaction: true,
     onUpdate: ({ editor }) => onChange(editor.getHTML()),
@@ -71,7 +66,17 @@ export function RichEditor({ value, onChange }: Props) {
   });
 
   function switchMode(next: 'rich' | 'html') {
-    if (next === 'rich') editor.commands.setContent(value, { emitUpdate: false });
+    if (next === 'rich') {
+      const losses = richModeLosses(value);
+      const stayInHtml =
+        losses.length > 0 &&
+        window.confirm(
+          `Rich mode can't represent ${lossList(losses)} in this post; they'll be removed.\n\nStay in HTML mode?`,
+        );
+      if (stayInHtml) return;
+      editor.commands.setContent(value, { emitUpdate: false });
+    }
+    setNotice(undefined);
     setMode(next);
   }
 
@@ -94,6 +99,7 @@ export function RichEditor({ value, onChange }: Props) {
           e.target.value = '';
         }}
       />
+      {notice && <p className="hint editor-notice">{notice}</p>}
       {mode === 'rich' ? (
         <EditorContent editor={editor} className="editor-surface" />
       ) : (

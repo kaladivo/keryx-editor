@@ -17,6 +17,7 @@ import { defaultSettings, type Secrets, type Settings } from './settings';
 
 const SettingsId = id('Settings');
 const SecretsId = id('Secrets');
+const DraftId = id('Draft');
 
 const Schema = {
   settings: {
@@ -33,12 +34,18 @@ const Schema = {
     token: nullOr(EvoluString),
     keysJson: nullOr(EvoluString),
   },
+  drafts: {
+    id: DraftId,
+    json: nullOr(EvoluString),
+  },
 };
 
 const settingsRowId = SettingsId.orThrow(createIdFromString('settings'));
 const secretsRowId = SecretsId.orThrow(createIdFromString('secrets'));
 
 const query = createQueryBuilder(Schema);
+const draftRowId = (key: string) => DraftId.orThrow(createIdFromString(`draft:${key}`));
+
 const settingsQuery = query((db) => db.selectFrom('settings').selectAll());
 const secretsQuery = query((db) =>
   db.selectFrom('secrets').selectAll().where('isDeleted', 'is not', sqliteTrue),
@@ -112,3 +119,30 @@ export async function forgetSecrets(): Promise<void> {
     isDeleted: sqliteTrue,
   });
 }
+
+/** The saved draft JSON for `key`, or null. */
+export async function loadDraft(key: string): Promise<string | null> {
+  const db = await evolu();
+  const rows = await db.loadQuery(
+    query((q) =>
+      q.selectFrom('drafts').select('json').where('id', '=', draftRowId(key)).where('isDeleted', 'is not', sqliteTrue),
+    ),
+  );
+  return rows[0]?.json ?? null;
+}
+
+/** Resolves once the local database stored it; a null json deletes the draft. */
+async function writeDraft(key: string, json: string | null): Promise<void> {
+  const db = await evolu();
+  await new Promise<void>((resolve) => {
+    db.upsert(
+      'drafts',
+      { id: draftRowId(key), json, isDeleted: json === null ? sqliteTrue : sqliteFalse },
+      { onComplete: resolve },
+    );
+  });
+}
+
+export const saveDraft = (key: string, json: string): Promise<void> => writeDraft(key, json);
+
+export const deleteDraft = (key: string): Promise<void> => writeDraft(key, null);

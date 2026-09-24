@@ -1,16 +1,31 @@
-import { useState } from 'react';
-import { byteSize } from '../lib/bytes';
-import { contentProblems, fromLocalInput, ID_PATTERN, rfc3339Now, slugify, toLocalInput } from '../lib/content';
+import { useEffect, useState } from 'react';
+import {
+  contentProblems,
+  fromLocalInput,
+  ID_PATTERN,
+  isBlankHtml,
+  loadsRemote,
+  rfc3339Now,
+  slugify,
+  toLocalInput,
+} from '../lib/content';
+import { deleteDraft, loadDraft } from '../lib/db';
+import { MAX_ITEM_BYTES, signedItemSize } from '../lib/itemSize';
 import type { Draft, Item } from '../lib/keryx-api';
+import { useDraftAutosave } from '../useDraftAutosave';
 import { PreviewImage } from './PreviewImage';
 import { RichEditor } from './RichEditor';
-import { SizeMeter, MAX_ITEM_BYTES } from './SizeMeter';
+import { SizeMeter } from './SizeMeter';
 
 interface Props {
   channel: string;
   channelLabel: string;
   item?: Item;
   existingIds: string[];
+  /** Signatures the committed item will carry (see signaturesFor in App). */
+  signatures: number;
+  /** Where the unsaved draft of this post is kept. */
+  draftKey: string;
   busy: boolean;
   onCancel: () => void;
   onPublish: (draft: Draft, notify: boolean) => void;
@@ -19,18 +34,92 @@ interface Props {
 const withoutUndefined = <T extends object>(obj: T): T =>
   Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
 
-export function PostEditor({ channel, channelLabel, item, existingIds, busy, onCancel, onPublish }: Props) {
+interface PostForm {
+  title: string;
+  id: string;
+  idTouched: boolean;
+  published: string;
+  language: string;
+  tags: string;
+  image?: string;
+  html: string;
+  notify: boolean;
+}
+
+const formOf = (item?: Item): PostForm => ({
+  title: item?.title ?? '',
+  id: item?.id ?? '',
+  idTouched: false,
+  published: item?.date_published ?? rfc3339Now(),
+  language: item?.language ?? 'en',
+  tags: item?.tags?.join(', ') ?? '',
+  image: item?.image,
+  html: item?.content_html ?? '',
+  notify: !item,
+});
+
+const PREVIEW_HEAD =
+  '<!doctype html><meta charset="utf-8">' +
+  `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; media-src data:; font-src data:; style-src 'unsafe-inline'">` +
+  '<meta name="viewport" content="width=device-width">' +
+  '<style>body{font:16px/1.55 system-ui,sans-serif;margin:16px;color:#1f2328;background:#fff}img{max-width:100%;height:auto}h1{font-size:1.4em;line-height:1.25}</style>';
+
+/** Loads the post's unsaved draft, if any, before the form mounts with it. */
+export function PostEditor(props: Props) {
+  const { item, draftKey } = props;
+  const [start, setStart] = useState<{ form: PostForm; restored: boolean }>();
+
+  useEffect(() => {
+    let live = true;
+    loadDraft(draftKey)
+      .catch(() => null)
+      .then((json) => {
+        if (live) setStart(json ? { form: JSON.parse(json) as PostForm, restored: true } : { form: formOf(item), restored: false });
+      });
+    return () => {
+      live = false;
+    };
+  }, [draftKey, item]);
+
+  if (!start) return <p className="page muted">Loading the editor…</p>;
+  return (
+    <PostEditorForm
+      key={String(start.restored)}
+      {...props}
+      initial={start.form}
+      restored={start.restored}
+      onDiscard={() => {
+        void deleteDraft(draftKey);
+        setStart({ form: formOf(item), restored: false });
+      }}
+    />
+  );
+}
+
+interface FormProps extends Props {
+  initial: PostForm;
+  restored: boolean;
+  onDiscard: () => void;
+}
+
+function PostEditorForm(props: FormProps) {
+  const { channel, channelLabel, item, existingIds, signatures, draftKey, busy, onCancel, onPublish } = props;
   const isNew = !item;
-  const [title, setTitle] = useState(item?.title ?? '');
-  const [id, setId] = useState(item?.id ?? '');
-  const [idTouched, setIdTouched] = useState(false);
-  const [published, setPublished] = useState(item?.date_published ?? rfc3339Now());
-  const [language, setLanguage] = useState(item?.language ?? 'en');
-  const [tags, setTags] = useState(item?.tags?.join(', ') ?? '');
-  const [image, setImage] = useState(item?.image);
-  const [html, setHtml] = useState(item?.content_html ?? '');
+  const [form, setForm] = useState(props.initial);
+  const [blank] = useState(() => formOf(item));
   const [tab, setTab] = useState<'write' | 'preview'>('write');
-  const [notify, setNotify] = useState(isNew);
+  const set = (patch: Partial<PostForm>) => setForm((f) => ({ ...f, ...patch }));
+  const { title, id, idTouched, published, language, tags, image, html, notify } = form;
+
+  const json = JSON.stringify(form);
+  const pristine = JSON.stringify(isNew ? { ...blank, published } : blank) === json;
+  const autosave = useDraftAutosave(draftKey, json, pristine);
+
+  function back() {
+    if (autosave.unsaved && autosave.failed && !window.confirm('This draft could not be saved on this device. Discard it?')) return;
+    if (autosave.unsaved) void autosave.flush();
+    onCancel();
+  }
 
   const postId = isNew && !idTouched ? slugify(title) : id;
 
@@ -52,12 +141,12 @@ export function PostEditor({ channel, channelLabel, item, existingIds, busy, onC
   };
 
   const draft = buildDraft();
-  const size = byteSize(JSON.stringify(draft));
+  const size = signedItemSize(draft, signatures);
   const problems = [
     ...(title.trim() ? [] : ['Add a title.']),
     ...(ID_PATTERN.test(postId) ? [] : ['The id may only contain a–z, 0–9, "-" and "_".']),
     ...(isNew && existingIds.includes(postId) ? [`A post with the id "${postId}" already exists.`] : []),
-    ...(html.replace(/<[^>]*>/g, '').trim() || /<img\s/i.test(html) ? [] : ['Write some content.']),
+    ...(isBlankHtml(html) ? ['Write some content.'] : []),
     ...contentProblems(html),
     ...(size > MAX_ITEM_BYTES ? ['The post is larger than 1 MB; shrink or remove images.'] : []),
   ];
@@ -69,7 +158,7 @@ export function PostEditor({ channel, channelLabel, item, existingIds, busy, onC
           <p className="eyebrow">{channelLabel}</p>
           <h1>{isNew ? 'New post' : 'Edit post'}</h1>
         </div>
-        <button type="button" onClick={onCancel} disabled={busy}>
+        <button type="button" onClick={back} disabled={busy}>
           Back
         </button>
       </header>
@@ -78,13 +167,23 @@ export function PostEditor({ channel, channelLabel, item, existingIds, busy, onC
         className="editor-layout"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!problems.length) onPublish(buildDraft(), notify);
+          if (problems.length) return;
+          void autosave.flush();
+          onPublish(buildDraft(), notify);
         }}
       >
+        {props.restored && (
+          <p className="alert alert-warn">
+            Restored unsaved draft ·{' '}
+            <button type="button" className="link-button" onClick={props.onDiscard}>
+              Discard
+            </button>
+          </p>
+        )}
         <div className="card form">
           <label className="field">
             <span className="label">Title</span>
-            <input className="title-input" value={title} onChange={(e) => setTitle(e.target.value)} required />
+            <input className="title-input" value={title} onChange={(e) => set({ title: e.target.value })} required />
           </label>
 
           <div className="grid-2">
@@ -95,10 +194,7 @@ export function PostEditor({ channel, channelLabel, item, existingIds, busy, onC
                   className="mono"
                   value={postId}
                   readOnly={!isNew}
-                  onChange={(e) => {
-                    setIdTouched(true);
-                    setId(e.target.value);
-                  }}
+                  onChange={(e) => set({ idTouched: true, id: e.target.value })}
                   spellCheck={false}
                   autoCapitalize="off"
                   aria-describedby="id-hint"
@@ -113,21 +209,21 @@ export function PostEditor({ channel, channelLabel, item, existingIds, busy, onC
               <input
                 type="datetime-local"
                 value={toLocalInput(published)}
-                onChange={(e) => e.target.value && setPublished(fromLocalInput(e.target.value))}
+                onChange={(e) => e.target.value && set({ published: fromLocalInput(e.target.value) })}
                 required
               />
             </label>
             <label className="field">
               <span className="label">Language</span>
-              <input value={language} onChange={(e) => setLanguage(e.target.value)} spellCheck={false} />
+              <input value={language} onChange={(e) => set({ language: e.target.value })} spellCheck={false} />
             </label>
             <label className="field">
               <span className="label">Tags</span>
-              <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="firmware, security" />
+              <input value={tags} onChange={(e) => set({ tags: e.target.value })} placeholder="firmware, security" />
             </label>
           </div>
 
-          <PreviewImage image={image} html={html} onChange={setImage} />
+          <PreviewImage image={image} html={html} onChange={(next) => set({ image: next })} />
         </div>
 
         <div className="card">
@@ -146,17 +242,16 @@ export function PostEditor({ channel, channelLabel, item, existingIds, busy, onC
             ))}
           </div>
           <div hidden={tab !== 'write'}>
-            <RichEditor value={html} onChange={setHtml} />
+            <RichEditor value={html} onChange={(next) => set({ html: next })} />
           </div>
-          {tab === 'preview' && (
-            <div className="preview-frame">
-              <iframe
-                title="Post preview"
-                sandbox=""
-                srcDoc={`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{font:16px/1.55 system-ui,sans-serif;margin:16px;color:#1f2328;background:#fff}img{max-width:100%;height:auto}h1{font-size:1.4em;line-height:1.25}</style><h1>${escapeHtml(title)}</h1>${html}`}
-              />
-            </div>
-          )}
+          {tab === 'preview' &&
+            (loadsRemote(html) ? (
+              <p className="alert alert-warn">No preview while the post links remote media.</p>
+            ) : (
+              <div className="preview-frame">
+                <iframe title="Post preview" sandbox="" srcDoc={`${PREVIEW_HEAD}<h1>${escapeHtml(title)}</h1>${html}`} />
+              </div>
+            ))}
         </div>
 
         <div className="card publish-bar">
@@ -170,7 +265,7 @@ export function PostEditor({ channel, channelLabel, item, existingIds, busy, onC
           )}
           <div className="publish-actions">
             <label className="check">
-              <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
+              <input type="checkbox" checked={notify} onChange={(e) => set({ notify: e.target.checked })} />
               <span>Notify subscribers</span>
             </label>
             <button type="submit" className="primary" disabled={busy || problems.length > 0}>

@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Company } from '../lib/keryx-api';
 import { formatDate } from '../lib/content';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
+const TICK_MS = 30_000;
 
 const WARN_BEFORE: Partial<Record<keyof Company['expires'], number>> = {
   timestamp: DAY,
@@ -25,7 +26,12 @@ interface Props {
 
 export function Expiries({ expires, onRefresh, busy }: Props) {
   const roles = ['timestamp', 'snapshot', 'targets', 'root'] as const;
-  const [now] = useState(Date.now);
+  const [now, setNow] = useState(Date.now);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => clearInterval(timer);
+  }, []);
 
   return (
     <section className="card" aria-labelledby="expiries-title">

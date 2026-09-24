@@ -2,8 +2,9 @@ import { lazy, Suspense, useState } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { PublishDialog } from './components/PublishDialog';
 import { Setup } from './components/Setup';
+import { deleteDraft } from './lib/db';
 import type { Head } from './lib/github';
-import type { Item } from './lib/keryx-api';
+import type { Company, Item } from './lib/keryx-api';
 import type { Operation } from './lib/publish';
 import { connect, type Session } from './lib/session';
 import { companyIdOf, type Secrets } from './lib/settings';
@@ -13,12 +14,29 @@ const PostEditor = lazy(() => import('./components/PostEditor').then((m) => ({ d
 
 type View = { kind: 'setup' } | { kind: 'dashboard' } | { kind: 'editor'; channel: string; item?: Item };
 
+const draftKeyOf = (repo: string, channel: string, id?: string) => `${repo}/${channel}/${id ?? ''}`;
+
+/**
+ * Signatures on the committed item: the editor signs with the channel key (simple mode) or the loaded
+ * author keys up to the threshold (authored), then the SDK adds its own channel-key signature.
+ */
+const signaturesFor = (company: Company, mode?: 'simple' | 'authored') =>
+  1 + (mode === 'authored' ? Math.max(1, company.keys.filter((k) => k.role === 'author').length) : 1);
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [secrets, setSecrets] = useState<{ secrets: Secrets; remember: boolean } | null>(null);
   const [view, setView] = useState<View>({ kind: 'setup' });
 
-  const onCommitted = (head: Head) => setSession((s) => s && { ...s, head, company: s.keryx.company() });
+  function onCommitted(head: Head, op: Operation) {
+    if (!session) return;
+    const company = session.keryx.company();
+    setSession((s) => s && { ...s, head, company });
+    if (op.kind !== 'publish' || view.kind !== 'editor') return;
+    void deleteDraft(draftKeyOf(session.repo.repo, op.channel, view.item?.id));
+    const item = company.channels.find((c) => c.name === op.channel)?.items.find((i) => i.id === op.draft.id);
+    if (!view.item && item) setView({ kind: 'editor', channel: op.channel, item });
+  }
   const { run, start, clear } = usePublishRun(onCommitted);
   const busy = run?.state === 'running';
 
@@ -52,13 +70,16 @@ export default function App() {
     );
   } else if (view.kind === 'editor') {
     const channel = session.company.channels.find((c) => c.name === view.channel);
+    const draftKey = draftKeyOf(session.repo.repo, view.channel, view.item?.id);
     content = (
       <PostEditor
-        key={`${view.channel}/${view.item?.id ?? 'new'}`}
+        key={draftKey}
+        draftKey={draftKey}
         channel={view.channel}
         channelLabel={channel?.displayName ?? view.channel}
         item={view.item}
         existingIds={channel?.items.map((i) => i.id) ?? []}
+        signatures={signaturesFor(session.company, channel?.mode)}
         busy={busy}
         onCancel={() => setView({ kind: 'dashboard' })}
         onPublish={(draft, notify) =>
@@ -93,7 +114,14 @@ export default function App() {
         </span>
       </nav>
       <Suspense fallback={<p className="page muted">Loading the editor…</p>}>{content}</Suspense>
-      {run && <PublishDialog run={run} onClose={closeRun} onReload={reload} />}
+      {run && (
+        <PublishDialog
+          run={run}
+          actionsUrl={`https://github.com/${session?.repo.repo}/actions`}
+          onClose={closeRun}
+          onReload={reload}
+        />
+      )}
     </>
   );
 }

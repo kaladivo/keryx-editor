@@ -9,6 +9,7 @@ export interface PublishRun {
   steps: Steps;
   state: 'running' | 'done' | 'error';
   committed: boolean;
+  deployPending?: boolean;
   error?: string;
   repoChanged?: boolean;
 }
@@ -20,7 +21,7 @@ const initialSteps = (): Steps => ({
   wakeup: { status: 'pending' },
 });
 
-export function usePublishRun(onCommitted: (head: Head) => void) {
+export function usePublishRun(onCommitted: (head: Head, op: Operation) => void) {
   const [run, setRun] = useState<PublishRun | null>(null);
 
   async function start(ctx: PublishContext, op: Operation, notify: boolean) {
@@ -28,14 +29,14 @@ export function usePublishRun(onCommitted: (head: Head) => void) {
     const update = (patch: (r: PublishRun) => Partial<PublishRun>) =>
       setRun((r) => (r ? { ...r, ...patch(r) } : r));
     try {
-      await runPublish(ctx, op, notify, {
+      const { deployed } = await runPublish(ctx, op, notify, {
         onStep: (id, state) => update((r) => ({ steps: { ...r.steps, [id]: state } })),
         onCommitted: (head) => {
           update(() => ({ committed: true }));
-          onCommitted(head);
+          onCommitted(head, op);
         },
       });
-      update(() => ({ state: 'done' }));
+      update(() => ({ state: 'done', deployPending: !deployed }));
     } catch (e) {
       update(() => ({
         state: 'error',

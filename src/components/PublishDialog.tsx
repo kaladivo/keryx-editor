@@ -14,16 +14,18 @@ const MARKS: Record<StepState['status'], string> = {
   running: '',
   done: '✓',
   skipped: '–',
+  warn: '!',
   error: '!',
 };
 
 interface Props {
   run: PublishRun;
+  actionsUrl: string;
   onClose: () => void;
   onReload: () => Promise<void>;
 }
 
-export function PublishDialog({ run, onClose, onReload }: Props) {
+export function PublishDialog({ run, actionsUrl, onClose, onReload }: Props) {
   const [reloading, setReloading] = useState(false);
   const [reloadError, setReloadError] = useState<string>();
   const needsReload = run.state === 'error' && !run.committed && run.steps.sign.status === 'done';
@@ -72,6 +74,7 @@ export function PublishDialog({ run, onClose, onReload }: Props) {
                   <span className="visually-hidden"> ({step.status})</span>
                 </div>
                 {step.detail && <div className="step-detail">{step.detail}</div>}
+                {step.note && <div className="step-detail step-note">{step.note}</div>}
               </div>
             </li>
           );
@@ -90,7 +93,17 @@ export function PublishDialog({ run, onClose, onReload }: Props) {
           <pre className="error-text">{reloadError}</pre>
         </div>
       )}
-      {run.state === 'done' && <p className="hint">All done.</p>}
+      {run.state === 'done' &&
+        (run.deployPending ? (
+          <p className="alert alert-warn">
+            Committed, deploy still pending.{' '}
+            <a href={actionsUrl} target="_blank" rel="noreferrer">
+              Check GitHub Actions
+            </a>
+          </p>
+        ) : (
+          <p className="hint">All done.</p>
+        ))}
     </Modal>
   );
 }
