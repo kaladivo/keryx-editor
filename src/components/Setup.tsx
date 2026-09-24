@@ -1,13 +1,16 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { forgetSecrets, loadStored, saveSecrets, saveSettings } from '../lib/db';
+import { useState, type ChangeEvent, type FormEvent } from 'react';
+import { forgetSecrets, saveSecrets, saveSettings, useEvolu, useStored } from '../lib/db';
 import type { KeyFile, KeyInfo } from '../lib/keryx-api';
 import { connect, type Session } from '../lib/session';
-import { companyIdOf, defaultSettings, mergeKeys, parseKeyFiles, type Secrets, type Settings } from '../lib/settings';
+import { companyIdOf, mergeKeys, parseKeyFiles, type Secrets, type Settings } from '../lib/settings';
+import { SyncPanel } from './SyncPanel';
 
 interface Props {
-  initial?: { settings: Settings; secrets: Secrets; remember: boolean };
+  /** The secrets of the current session, shown when none are remembered. */
+  sessionSecrets?: Secrets;
   loadedKeys?: KeyInfo[];
-  onConnected: (session: Session, secrets: Secrets, remember: boolean) => void;
+  onConnected: (session: Session, secrets: Secrets) => void;
+  /** Present on the Settings screen of a connected session. */
   onCancel?: () => void;
 }
 
@@ -30,38 +33,24 @@ function keyProblems(keys: KeyFile[]): string[] {
   ];
 }
 
-export function Setup({ initial, loadedKeys, onConnected, onCancel }: Props) {
-  const [settings, setSettings] = useState<Settings>(initial?.settings ?? defaultSettings);
-  const [token, setToken] = useState(initial?.secrets.token ?? '');
-  const [keysText, setKeysText] = useState(initial ? JSON.stringify(initial.secrets.keys, null, 2) : '');
+/** Form values fall back to the stored ones until edited, so synced changes show up live. */
+export function Setup({ sessionSecrets, loadedKeys, onConnected, onCancel }: Props) {
+  const evolu = useEvolu();
+  const stored = useStored();
+  const [settingsEdits, setSettingsEdits] = useState<Partial<Settings>>({});
+  const [tokenEdit, setToken] = useState<string>();
+  const [keysEdit, setKeysText] = useState<string>();
+  const [rememberEdit, setRemember] = useState<boolean>();
   const [fileKeys, setFileKeys] = useState<KeyFile[]>([]);
-  const [remember, setRemember] = useState(initial?.remember ?? false);
-  const [hasStored, setHasStored] = useState(false);
-  const [storageError, setStorageError] = useState<string>();
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string>();
 
-  const hasInitial = initial !== undefined;
-  useEffect(() => {
-    let cancelled = false;
-    loadStored().then(
-      (stored) => {
-        if (cancelled) return;
-        setHasStored(stored.secrets !== null);
-        if (hasInitial) return;
-        setSettings(stored.settings);
-        if (stored.secrets) {
-          setToken(stored.secrets.token);
-          setKeysText(JSON.stringify(stored.secrets.keys, null, 2));
-          setRemember(true);
-        }
-      },
-      (e: unknown) => !cancelled && setStorageError(errorText(e)),
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [hasInitial]);
+  const settings = { ...stored.settings, ...settingsEdits };
+  const knownSecrets = stored.secrets ?? sessionSecrets;
+  const token = tokenEdit ?? knownSecrets?.token ?? '';
+  const keysText = keysEdit ?? (knownSecrets ? JSON.stringify(knownSecrets.keys, null, 2) : '');
+  const hasStored = stored.secrets !== null;
+  const remember = rememberEdit ?? hasStored;
 
   let pastedKeys: KeyFile[] = [];
   let keysError: string | undefined;
@@ -92,24 +81,15 @@ export function Setup({ initial, loadedKeys, onConnected, onCancel }: Props) {
     e.target.value = '';
   }
 
-  async function forget() {
-    try {
-      await forgetSecrets();
-      setHasStored(false);
-      setRemember(false);
-    } catch (e) {
-      setStorageError(errorText(e));
-    }
+  function forget() {
+    forgetSecrets(evolu);
+    setRemember(false);
   }
 
-  async function persist(secrets: Secrets) {
-    try {
-      await saveSettings(settings);
-      if (remember) await saveSecrets(secrets);
-      else if (hasStored) await forgetSecrets();
-    } catch (e) {
-      setStorageError(errorText(e));
-    }
+  function persist(secrets: Secrets) {
+    saveSettings(evolu, settings);
+    if (remember) saveSecrets(evolu, secrets);
+    else if (hasStored) forgetSecrets(evolu);
   }
 
   async function submit(e: FormEvent) {
@@ -118,8 +98,8 @@ export function Setup({ initial, loadedKeys, onConnected, onCancel }: Props) {
     setConnecting(true);
     const secrets = { token: token.trim(), keys };
     try {
-      await persist(secrets);
-      onConnected(await connect(settings, secrets), secrets, remember);
+      persist(secrets);
+      onConnected(await connect(settings, secrets), secrets);
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -133,7 +113,7 @@ export function Setup({ initial, loadedKeys, onConnected, onCancel }: Props) {
     <main className="page narrow">
       <header className="page-header">
         <div>
-          <h1>Connect a company</h1>
+          <h1>{onCancel ? 'Settings' : 'Connect a company'}</h1>
           <p className="muted">Point the editor at your Keryx repository and load your publishing keys.</p>
         </div>
         {onCancel && (
@@ -142,6 +122,8 @@ export function Setup({ initial, loadedKeys, onConnected, onCancel }: Props) {
           </button>
         )}
       </header>
+
+      {!onCancel && <SyncPanel firstRun />}
 
       <form className="card form" onSubmit={submit}>
         <section className="form-section">
@@ -153,7 +135,7 @@ export function Setup({ initial, loadedKeys, onConnected, onCancel }: Props) {
                   <span className="label">{label}</span>
                   <input
                     value={settings[key]}
-                    onChange={(e) => setSettings({ ...settings, [key]: e.target.value })}
+                    onChange={(e) => setSettingsEdits({ ...settingsEdits, [key]: e.target.value })}
                     required
                     spellCheck={false}
                     autoCapitalize="off"
@@ -247,10 +229,10 @@ export function Setup({ initial, loadedKeys, onConnected, onCancel }: Props) {
           <label className="check">
             <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
             <span>
-              Remember the token and keys on this device
+              Remember the token and keys
               <span className="hint block">
-                Stored locally in this browser only (never synced). Otherwise they stay in memory until you close the
-                tab.
+                Stored in this browser and synced end-to-end encrypted to your other devices that use the same recovery
+                phrase; the sync relay can't read them. Otherwise they stay in memory until you close the tab.
               </span>
             </span>
           </label>
@@ -259,7 +241,6 @@ export function Setup({ initial, loadedKeys, onConnected, onCancel }: Props) {
               Forget saved token and keys
             </button>
           )}
-          {storageError && <p className="alert alert-warn">Local storage is unavailable: {storageError}</p>}
         </section>
 
         {error && (
@@ -274,6 +255,8 @@ export function Setup({ initial, loadedKeys, onConnected, onCancel }: Props) {
           </button>
         </div>
       </form>
+
+      {onCancel && <SyncPanel firstRun={false} />}
     </main>
   );
 }

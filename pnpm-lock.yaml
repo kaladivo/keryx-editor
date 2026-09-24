@@ -11,6 +11,12 @@ importers:
       '@evolu/common':
         specifier: ^8.10.0
         version: 8.10.0
+      '@evolu/react':
+        specifier: ^11.0.3
+        version: 11.0.3(@evolu/common@8.10.0)(react@19.3.0)
+      '@evolu/react-web':
+        specifier: ^3.0.3
+        version: 3.0.3(@evolu/common@8.10.0)(@evolu/web@3.1.2(@evolu/common@8.10.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@evolu/web':
         specifier: ^3.1.2
         version: 3.1.2(@evolu/common@8.10.0)
@@ -63,6 +69,22 @@ packages:
   '@evolu/common@8.10.0':
     resolution: {integrity: sha512-z364/0zlo85RoOvXc6XRBEII/KVOCVtEydzQBcuuY8Bkab6QWQ+n+y1QRehqa3bzqPOWwPDxUT/fjs+F9PJZSQ==}
     engines: {node: '>=24.20.0'}
+
+  '@evolu/react-web@3.0.3':
+    resolution: {integrity: sha512-N+T34fRWmzZCSFY49PRKZYcm8yjl5KZ4g5/OGmUtADul2FS053jYw3WlkVJPstC0BoEJRCaMm+kCFcBmRe3YiA==}
+    engines: {node: '>=24.20.0'}
+    peerDependencies:
+      '@evolu/common': ^8.10.0
+      '@evolu/web': ^3.1.2
+      react: '>=19'
+      react-dom: '>=19'
+
+  '@evolu/react@11.0.3':
+    resolution: {integrity: sha512-AmCtYtUeetj2qJrs3nlqw2ShvEwXWYPaAAPt8tS8paI4hXjda1QrHRGLUztozCbBeTuWIUvWTYBN6sOtObdZhg==}
+    engines: {node: '>=24.20.0'}
+    peerDependencies:
+      '@evolu/common': ^8.10.0
+      react: '>=19'
 
   '@evolu/sqlite-wasm@2.2.4':
     resolution: {integrity: sha512-/JOYGFN93QspD2C8HVxVgBUlFWqJ1IpaVuIhEB53u4+ZvE+D3LjpNHDYiwZgf0n7VaH2U85OY5eV3wUrWc3scg==}
@@ -792,6 +814,18 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       kysely: 0.29.6
       random: 5.5.1
+
+  '@evolu/react-web@3.0.3(@evolu/common@8.10.0)(@evolu/web@3.1.2(@evolu/common@8.10.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
+    dependencies:
+      '@evolu/common': 8.10.0
+      '@evolu/web': 3.1.2(@evolu/common@8.10.0)
+      react: 19.3.0
+      react-dom: 19.3.0(react@19.3.0)
+
+  '@evolu/react@11.0.3(@evolu/common@8.10.0)(react@19.3.0)':
+    dependencies:
+      '@evolu/common': 8.10.0
+      react: 19.3.0
 
   '@evolu/sqlite-wasm@2.2.4': {}
 

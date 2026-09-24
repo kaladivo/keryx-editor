@@ -1,25 +1,25 @@
 import {
-  AppName,
-  createAppOwner,
-  createEvolu,
   createIdFromString,
   createQueryBuilder,
   id,
   nullOr,
-  OwnerSecret,
   sqliteFalse,
   sqliteTrue,
   String as EvoluString,
+  type Evolu,
+  type Query,
+  type QueryRows,
+  type Row,
 } from '@evolu/common';
-import { createEvoluDeps, createRun } from '@evolu/web';
-import type { KeyFile } from './keryx-api';
-import { defaultSettings, type Secrets, type Settings } from './settings';
+import { createEvoluBinding } from '@evolu/react';
+import { useEffect } from 'react';
+import { defaultSettings, parseKeyFiles, type Secrets, type Settings } from './settings';
 
 const SettingsId = id('Settings');
 const SecretsId = id('Secrets');
 const DraftId = id('Draft');
 
-const Schema = {
+export const Schema = {
   settings: {
     id: SettingsId,
     repo: nullOr(EvoluString),
@@ -40,109 +40,87 @@ const Schema = {
   },
 };
 
+export type AppEvolu = Evolu<typeof Schema>;
+
+export const { EvoluContext, useEvolu, useQuery } = createEvoluBinding<typeof Schema>();
+
 const settingsRowId = SettingsId.orThrow(createIdFromString('settings'));
 const secretsRowId = SecretsId.orThrow(createIdFromString('secrets'));
-
-const query = createQueryBuilder(Schema);
 const draftRowId = (key: string) => DraftId.orThrow(createIdFromString(`draft:${key}`));
 
+const query = createQueryBuilder(Schema);
+
 const settingsQuery = query((db) => db.selectFrom('settings').selectAll());
-const secretsQuery = query((db) =>
-  db.selectFrom('secrets').selectAll().where('isDeleted', 'is not', sqliteTrue),
-);
-
-// Local-only, so there is nowhere safer to keep a random owner secret than next
-// to the database itself; a fixed one keeps the database readable across loads.
-const appOwner = createAppOwner(OwnerSecret.orThrow(new Uint8Array(32)));
-
-let evoluPromise: ReturnType<typeof openEvolu> | undefined;
-
-function openEvolu() {
-  const run = createRun(createEvoluDeps());
-  return run.ok(
-    createEvolu(Schema, {
-      appName: AppName.orThrow('keryx-editor'),
-      appOwner,
-      transports: [],
-    }),
+const secretsQuery = query((db) => db.selectFrom('secrets').selectAll().where('isDeleted', 'is not', sqliteTrue));
+const draftQuery = (key: string) =>
+  query((db) =>
+    db.selectFrom('drafts').select('json').where('id', '=', draftRowId(key)).where('isDeleted', 'is not', sqliteTrue),
   );
+
+type SettingsRow = typeof settingsQuery.Row;
+type SecretsRow = typeof secretsQuery.Row;
+
+const settingsOf = (row?: SettingsRow): Settings => ({
+  repo: row?.repo ?? defaultSettings.repo,
+  branch: row?.branch ?? defaultSettings.branch,
+  siteUrl: row?.siteUrl ?? defaultSettings.siteUrl,
+  repoDir: row?.repoDir ?? defaultSettings.repoDir,
+  anchorDir: row?.anchorDir ?? defaultSettings.anchorDir,
+  relayUrl: row?.relayUrl ?? defaultSettings.relayUrl,
+});
+
+function secretsOf(row?: SecretsRow): Secrets | null {
+  if (row?.token == null || row.keysJson == null) return null;
+  try {
+    return { token: row.token, keys: parseKeyFiles(row.keysJson) };
+  } catch {
+    return null;
+  }
 }
 
-const evolu = () => (evoluPromise ??= openEvolu());
-
-export interface Stored {
-  settings: Settings;
-  secrets: Secrets | null;
+/**
+ * `useQuery`, plus a reload after mount: Evolu skips refreshing a query that is loaded but not yet
+ * subscribed (while Suspense commits), so rows synced in right then, as after a restore, would stay
+ * invisible. The reload re-queries only when such a refresh was skipped.
+ */
+function useLiveQuery<R extends Row>(query: Query<typeof Schema, R>): QueryRows<R> {
+  const evolu = useEvolu();
+  const rows = useQuery(query);
+  useEffect(() => {
+    void evolu.loadQuery(query);
+  }, [evolu, query]);
+  return rows;
 }
 
-export async function loadStored(): Promise<Stored> {
-  const db = await evolu();
-  const [settingsRows, secretsRows] = await Promise.all([
-    db.loadQuery(settingsQuery),
-    db.loadQuery(secretsQuery),
-  ]);
-  const s = settingsRows[0];
-  const settings: Settings = {
-    repo: s?.repo ?? defaultSettings.repo,
-    branch: s?.branch ?? defaultSettings.branch,
-    siteUrl: s?.siteUrl ?? defaultSettings.siteUrl,
-    repoDir: s?.repoDir ?? defaultSettings.repoDir,
-    anchorDir: s?.anchorDir ?? defaultSettings.anchorDir,
-    relayUrl: s?.relayUrl ?? defaultSettings.relayUrl,
-  };
-  const sec = secretsRows[0];
-  const secrets =
-    sec?.token != null && sec.keysJson != null
-      ? { token: sec.token, keys: JSON.parse(sec.keysJson) as KeyFile[] }
-      : null;
-  return { settings, secrets };
+/** The stored settings (defaults for missing values) and the remembered secrets; live, including synced changes. */
+export function useStored(): { settings: Settings; secrets: Secrets | null } {
+  const settingsRows = useLiveQuery(settingsQuery);
+  const secretsRows = useLiveQuery(secretsQuery);
+  return { settings: settingsOf(settingsRows[0]), secrets: secretsOf(secretsRows[0]) };
 }
 
-export async function saveSettings(settings: Settings): Promise<void> {
-  (await evolu()).upsert('settings', { id: settingsRowId, ...settings });
-}
+/** The saved draft JSON for `key`, or null; live, including synced changes. */
+export const useStoredDraft = (key: string): string | null => useLiveQuery(draftQuery(key))[0]?.json ?? null;
 
-export async function saveSecrets({ token, keys }: Secrets): Promise<void> {
-  (await evolu()).upsert('secrets', {
-    id: secretsRowId,
-    token,
-    keysJson: JSON.stringify(keys),
-    isDeleted: sqliteFalse,
-  });
-}
+export const saveSettings = (evolu: AppEvolu, settings: Settings) =>
+  evolu.upsert('settings', { id: settingsRowId, ...settings });
 
-export async function forgetSecrets(): Promise<void> {
-  (await evolu()).upsert('secrets', {
-    id: secretsRowId,
-    token: null,
-    keysJson: null,
-    isDeleted: sqliteTrue,
-  });
-}
+export const saveSecrets = (evolu: AppEvolu, { token, keys }: Secrets) =>
+  evolu.upsert('secrets', { id: secretsRowId, token, keysJson: JSON.stringify(keys), isDeleted: sqliteFalse });
 
-/** The saved draft JSON for `key`, or null. */
-export async function loadDraft(key: string): Promise<string | null> {
-  const db = await evolu();
-  const rows = await db.loadQuery(
-    query((q) =>
-      q.selectFrom('drafts').select('json').where('id', '=', draftRowId(key)).where('isDeleted', 'is not', sqliteTrue),
-    ),
-  );
-  return rows[0]?.json ?? null;
-}
+export const forgetSecrets = (evolu: AppEvolu) =>
+  evolu.upsert('secrets', { id: secretsRowId, token: null, keysJson: null, isDeleted: sqliteTrue });
 
 /** Resolves once the local database stored it; a null json deletes the draft. */
-async function writeDraft(key: string, json: string | null): Promise<void> {
-  const db = await evolu();
-  await new Promise<void>((resolve) => {
-    db.upsert(
+const writeDraft = (evolu: AppEvolu, key: string, json: string | null) =>
+  new Promise<void>((resolve) => {
+    evolu.upsert(
       'drafts',
       { id: draftRowId(key), json, isDeleted: json === null ? sqliteTrue : sqliteFalse },
       { onComplete: resolve },
     );
   });
-}
 
-export const saveDraft = (key: string, json: string): Promise<void> => writeDraft(key, json);
+export const saveDraft = (evolu: AppEvolu, key: string, json: string) => writeDraft(evolu, key, json);
 
-export const deleteDraft = (key: string): Promise<void> => writeDraft(key, null);
+export const deleteDraft = (evolu: AppEvolu, key: string) => writeDraft(evolu, key, null);

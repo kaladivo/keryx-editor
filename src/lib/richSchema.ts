@@ -1,18 +1,44 @@
 import Image from '@tiptap/extension-image';
-import { generateHTML, generateJSON } from '@tiptap/react';
+import { DOMParser as SchemaParser, DOMSerializer } from '@tiptap/pm/model';
+import { elementFromString, getSchema } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
+import { isImageDataUrl, loadsRemoteCss } from './content';
 
+/** Parse rules also apply to pasted and dropped HTML, so they only admit what can't fetch. */
 const StyledImage = Image.extend({
   addAttributes() {
-    return { ...this.parent?.(), style: { default: null } };
+    return {
+      ...this.parent?.(),
+      style: {
+        default: null,
+        parseHTML: (el: HTMLElement) => {
+          const style = el.getAttribute('style');
+          return style && !loadsRemoteCss(style) ? style : null;
+        },
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'img[src]', getAttrs: (el: HTMLElement) => (isImageDataUrl(el.getAttribute('src') ?? '') ? null : false) }];
   },
 });
 
 /** The document schema of the rich editor (UI-only extensions such as the placeholder aside). */
 export const RICH_EXTENSIONS = [
   StarterKit.configure({ link: { openOnClick: false, defaultProtocol: 'https' } }),
-  StyledImage.configure({ allowBase64: true }),
+  StyledImage,
 ];
+
+const schema = getSchema(RICH_EXTENSIONS);
+const inertDocument = document.implementation.createHTMLDocument();
+
+/** The HTML the rich editor would make of this HTML, built in a detached document so images never load. */
+function richRoundTrip(html: string): string {
+  const doc = SchemaParser.fromSchema(schema).parse(elementFromString(html));
+  const container = inertDocument.createElement('div');
+  container.append(DOMSerializer.fromSchema(schema).serializeFragment(doc.content, { document: inertDocument }));
+  return container.innerHTML;
+}
 
 const TAG_ALIASES: Record<string, string> = { b: 'strong', i: 'em', strike: 's', del: 's' };
 const LINK_ATTRS = new Set(['target', 'rel']);
@@ -39,7 +65,7 @@ const visibleText = (html: string) =>
 
 /** What the rich editor would drop from this HTML, e.g. `<table>`, `style on <p>`; empty when nothing. */
 export function richModeLosses(html: string): string[] {
-  const rich = generateHTML(generateJSON(html, RICH_EXTENSIONS), RICH_EXTENSIONS);
+  const rich = richRoundTrip(html);
   const kept = features(rich);
   const lost = [...features(html)].filter((f) => !kept.has(f)).map((f) => f.replace(/^([^=]+)=".*" on /s, '$1 on '));
   if (!lost.length && visibleText(rich) !== visibleText(html)) lost.push('some text');

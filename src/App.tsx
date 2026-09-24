@@ -2,7 +2,8 @@ import { lazy, Suspense, useState } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { PublishDialog } from './components/PublishDialog';
 import { Setup } from './components/Setup';
-import { deleteDraft } from './lib/db';
+import { deleteDraft, useEvolu } from './lib/db';
+import { useEvoluError } from './lib/evolu';
 import type { Head } from './lib/github';
 import type { Company, Item } from './lib/keryx-api';
 import type { Operation } from './lib/publish';
@@ -25,15 +26,17 @@ const signaturesFor = (company: Company, mode?: 'simple' | 'authored') =>
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
-  const [secrets, setSecrets] = useState<{ secrets: Secrets; remember: boolean } | null>(null);
+  const [secrets, setSecrets] = useState<Secrets | null>(null);
   const [view, setView] = useState<View>({ kind: 'setup' });
+  const evolu = useEvolu();
+  const evoluError = useEvoluError();
 
   function onCommitted(head: Head, op: Operation) {
     if (!session) return;
     const company = session.keryx.company();
     setSession((s) => s && { ...s, head, company });
     if (op.kind !== 'publish' || view.kind !== 'editor') return;
-    void deleteDraft(draftKeyOf(session.repo.repo, op.channel, view.item?.id));
+    void deleteDraft(evolu, draftKeyOf(session.repo.repo, op.channel, view.item?.id));
     const item = company.channels.find((c) => c.name === op.channel)?.items.find((i) => i.id === op.draft.id);
     if (!view.item && item) setView({ kind: 'editor', channel: op.channel, item });
   }
@@ -46,7 +49,7 @@ export default function App() {
 
   async function reload() {
     if (!session || !secrets) return;
-    setSession(await connect(session.settings, secrets.secrets));
+    setSession(await connect(session.settings, secrets));
   }
 
   function closeRun() {
@@ -58,12 +61,12 @@ export default function App() {
   if (!session || view.kind === 'setup') {
     content = (
       <Setup
-        initial={session && secrets ? { settings: session.settings, ...secrets } : undefined}
+        sessionSecrets={secrets ?? undefined}
         loadedKeys={session?.company.keys}
         onCancel={session ? () => setView({ kind: 'dashboard' }) : undefined}
-        onConnected={(next, nextSecrets, remember) => {
+        onConnected={(next, nextSecrets) => {
           setSession(next);
-          setSecrets({ secrets: nextSecrets, remember });
+          setSecrets(nextSecrets);
           setView({ kind: 'dashboard' });
         }}
       />
@@ -113,6 +116,11 @@ export default function App() {
           Keryx Editor
         </span>
       </nav>
+      {evoluError && (
+        <p className="alert alert-warn page-alert" role="alert">
+          Local data error ({evoluError.type}). Settings and drafts may not be saved or synced; see the console.
+        </p>
+      )}
       <Suspense fallback={<p className="page muted">Loading the editor…</p>}>{content}</Suspense>
       {run && (
         <PublishDialog

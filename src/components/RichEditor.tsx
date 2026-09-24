@@ -4,6 +4,7 @@ import { Selection } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { EditorContent, useEditor, type Editor } from '@tiptap/react';
 import { useRef, useState, type ReactNode } from 'react';
+import { contentProblems } from '../lib/content';
 import { imageToDataUrl } from '../lib/images';
 import { RICH_EXTENSIONS, richModeLosses } from '../lib/richSchema';
 import { Icon } from './icons';
@@ -34,6 +35,8 @@ const lossList = (losses: string[]) => losses.slice(0, 4).join(', ') + (losses.l
 
 export function RichEditor({ value, onChange }: Props) {
   const [notice, setNotice] = useState(() => {
+    const problems = contentProblems(value);
+    if (problems.length) return `Opened in HTML mode: ${problems.join(' ')}`;
     const losses = richModeLosses(value);
     return losses.length ? `Opened in HTML mode: the rich editor can't represent ${lossList(losses)}.` : undefined;
   });
@@ -43,7 +46,7 @@ export function RichEditor({ value, onChange }: Props) {
 
   const editor = useEditor({
     extensions: [...RICH_EXTENSIONS, Placeholder.configure({ placeholder: 'Write your post…' })],
-    content: value,
+    content: mode === 'rich' ? value : '',
     shouldRerenderOnTransaction: true,
     onUpdate: ({ editor }) => onChange(editor.getHTML()),
     editorProps: {
@@ -67,6 +70,11 @@ export function RichEditor({ value, onChange }: Props) {
 
   function switchMode(next: 'rich' | 'html') {
     if (next === 'rich') {
+      const problems = contentProblems(value);
+      if (problems.length) {
+        setNotice(`Fix the HTML before switching to rich mode: ${problems.join(' ')}`);
+        return;
+      }
       const losses = richModeLosses(value);
       const stayInHtml =
         losses.length > 0 &&

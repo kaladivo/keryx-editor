@@ -4,6 +4,7 @@ import { formatDate } from '../lib/content';
 import type { Company, Item } from '../lib/keryx-api';
 import { CompanyHeader } from './CompanyHeader';
 import { Expiries } from './Expiries';
+import { Icon } from './icons';
 import { Modal } from './Modal';
 
 interface Props {
@@ -34,6 +35,7 @@ export function Dashboard(props: Props) {
       <header className="page-header">
         <CompanyHeader company={company} companyId={props.companyId} repo={props.repo} branch={props.branch} />
         <button type="button" onClick={props.onSettings}>
+          <Icon name="settings" />
           Settings
         </button>
       </header>

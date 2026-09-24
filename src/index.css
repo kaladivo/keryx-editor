@@ -856,3 +856,30 @@ textarea.html-source {
     border-top-color: var(--accent);
   }
 }
+
+/* Sync */
+
+.sync-panel h3 {
+  font-size: 0.92rem;
+}
+.sync-panel details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+.sync-panel details[open] summary {
+  margin-bottom: 12px;
+}
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.alert-ok {
+  background: var(--accent-soft);
+  color: var(--ok);
+}
+.page-alert {
+  max-width: 940px;
+  margin: 16px auto 0;
+}

@@ -9,7 +9,7 @@ import {
   slugify,
   toLocalInput,
 } from '../lib/content';
-import { deleteDraft, loadDraft } from '../lib/db';
+import { deleteDraft, useEvolu, useStoredDraft } from '../lib/db';
 import { MAX_ITEM_BYTES, signedItemSize } from '../lib/itemSize';
 import type { Draft, Item } from '../lib/keryx-api';
 import { useDraftAutosave } from '../useDraftAutosave';
@@ -64,34 +64,44 @@ const PREVIEW_HEAD =
   '<meta name="viewport" content="width=device-width">' +
   '<style>body{font:16px/1.55 system-ui,sans-serif;margin:16px;color:#1f2328;background:#fff}img{max-width:100%;height:auto}h1{font-size:1.4em;line-height:1.25}</style>';
 
-/** Loads the post's unsaved draft, if any, before the form mounts with it. */
+const parseForm = (json: string | null): PostForm | null => {
+  try {
+    return json ? (JSON.parse(json) as PostForm) : null;
+  } catch {
+    return null;
+  }
+};
+
+interface Start {
+  form: PostForm;
+  restored: boolean;
+  /** Bumped to remount the form with a new start. */
+  version: number;
+}
+
+/** Starts from the post's unsaved draft, if any, and adopts drafts synced from other devices. */
 export function PostEditor(props: Props) {
   const { item, draftKey } = props;
-  const [start, setStart] = useState<{ form: PostForm; restored: boolean }>();
+  const evolu = useEvolu();
+  const storedJson = useStoredDraft(draftKey);
+  const [start, setStart] = useState<Start>(() => {
+    const draft = parseForm(storedJson);
+    return { form: draft ?? formOf(item), restored: draft !== null, version: 0 };
+  });
+  const restart = (form: PostForm, restored: boolean) => setStart((s) => ({ form, restored, version: s.version + 1 }));
 
-  useEffect(() => {
-    let live = true;
-    loadDraft(draftKey)
-      .catch(() => null)
-      .then((json) => {
-        if (live) setStart(json ? { form: JSON.parse(json) as PostForm, restored: true } : { form: formOf(item), restored: false });
-      });
-    return () => {
-      live = false;
-    };
-  }, [draftKey, item]);
-
-  if (!start) return <p className="page muted">Loading the editor…</p>;
   return (
     <PostEditorForm
-      key={String(start.restored)}
+      key={start.version}
       {...props}
       initial={start.form}
       restored={start.restored}
-      onDiscard={() => {
-        void deleteDraft(draftKey);
-        setStart({ form: formOf(item), restored: false });
+      storedJson={storedJson}
+      onSyncedDraft={(json) => {
+        const draft = parseForm(json);
+        if (draft) restart(draft, true);
       }}
+      onDiscard={() => void deleteDraft(evolu, draftKey).then(() => restart(formOf(item), false))}
     />
   );
 }
@@ -99,11 +109,14 @@ export function PostEditor(props: Props) {
 interface FormProps extends Props {
   initial: PostForm;
   restored: boolean;
+  storedJson: string | null;
+  onSyncedDraft: (json: string) => void;
   onDiscard: () => void;
 }
 
 function PostEditorForm(props: FormProps) {
-  const { channel, channelLabel, item, existingIds, signatures, draftKey, busy, onCancel, onPublish } = props;
+  const { channel, channelLabel, item, existingIds, signatures, draftKey, busy, onCancel, onPublish, storedJson, onSyncedDraft } =
+    props;
   const isNew = !item;
   const [form, setForm] = useState(props.initial);
   const [blank] = useState(() => formOf(item));
@@ -114,6 +127,11 @@ function PostEditorForm(props: FormProps) {
   const json = JSON.stringify(form);
   const pristine = JSON.stringify(isNew ? { ...blank, published } : blank) === json;
   const autosave = useDraftAutosave(draftKey, json, pristine);
+
+  const syncedDraft = storedJson !== null && storedJson !== json && storedJson !== autosave.savedJson;
+  useEffect(() => {
+    if (syncedDraft && !autosave.unsaved) onSyncedDraft(storedJson);
+  }, [syncedDraft, autosave.unsaved, storedJson, onSyncedDraft]);
 
   function back() {
     if (autosave.unsaved && autosave.failed && !window.confirm('This draft could not be saved on this device. Discard it?')) return;
